@@ -22,7 +22,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GMAIL_USER     = os.environ["GMAIL_USER"]       # vinicyusarro@gmail.com
 GMAIL_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]  # App Password do Gmail
 TO_EMAILS      = ["vinicyusarro@gmail.com", "lais_domitilo@hotmail.com"]
-MODEL          = "gemini-2.0-flash"
+MODEL          = "gemini-1.5-flash"
 
 # ── PROMPT ────────────────────────────────────────────────────────────────────
 def build_prompt():
@@ -92,6 +92,8 @@ def call_gemini(prompt: str) -> dict:
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192}
     }
     r = requests.post(url, json=payload, timeout=120)
+    if not r.ok:
+        print(f"Gemini error {r.status_code}: {r.text}")
     r.raise_for_status()
     raw = r.json()["candidates"][0]["content"]["parts"][0]["text"]
     # Strip possible markdown fences
