@@ -95,7 +95,9 @@ def call_gemini(prompt: str) -> dict:
     r.raise_for_status()
     raw = r.json()["candidates"][0]["content"]["parts"][0]["text"]
     # Strip possible markdown fences
-    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    import re
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    raw = re.sub(r"\s*```$", "", raw).strip()
     return json.loads(raw)
 
 # ── EXCEL ─────────────────────────────────────────────────────────────────────
@@ -196,34 +198,41 @@ def build_excel(data: dict, filepath: str):
     ws2.row_dimensions[3].height = 22
 
     medals = ["FFF0D0","F0F0F0","FFF8EE"]
-    for i, r in enumerate(data.get("ranking_top3_baratos",[]), 4):
+    ranking = data.get("ranking_top3_baratos", [])
+    for i, r in enumerate(ranking, 4):
         ws2.row_dimensions[i].height = 30
         for col, val in enumerate([r.get("posicao",""), r.get("destino",""),
                                     r.get("preco",""), r.get("motivo","")], 1):
-            data_cell(ws2.cell(i,col), str(val), bg=medals[i-4],
+            data_cell(ws2.cell(i,col), str(val), bg=medals[min(i-4, 2)],
                       align="center" if col!=4 else "left", bold=(col==1))
 
-    ws2.merge_cells("A6:D6")
-    c = ws2["A6"]
+    # Section header placed right after however many ranking rows there are
+    sec_row  = 4 + len(ranking)
+    data_row = sec_row + 1
+    cat_row  = sec_row + 2
+
+    merge_ref = f"A{sec_row}:D{sec_row}"
+    ws2.merge_cells(merge_ref)
+    c = ws2[f"A{sec_row}"]
     c.value     = "⭐  MELHOR OPÇÃO GERAL POR CATEGORIA"
     c.font      = Font(bold=True, size=11, color=WHITE, name="Arial")
     c.fill      = PatternFill("solid", fgColor=GOLD)
     c.alignment = Alignment(horizontal="center", vertical="center")
-    ws2.row_dimensions[6].height = 24
+    ws2.row_dimensions[sec_row].height = 24
 
     for col, h in enumerate(["Categoria","Destino","Preço (R$)","Motivo / Link"], 1):
-        hdr_cell(ws2.cell(7, col), h)
+        hdr_cell(ws2.cell(data_row, col), h)
 
     best = data.get("melhor_opcao_geral", {})
     cat_map = [("🇧🇷 Brasil","brasil"),("🌍 Europa","europa"),("🇺🇸 EUA","eua")]
     best_fills = [WHITE, PALE_GOLD, WHITE]
-    for i, (label, key) in enumerate(cat_map, 8):
+    for i, (label, key) in enumerate(cat_map, cat_row):
         d = best.get(key, {})
         ws2.row_dimensions[i].height = 36
         row_vals = [label, d.get("destino",""), d.get("preco",""),
                     f"{d.get('motivo','')}  |  {d.get('link','')}"]
         for col, val in enumerate(row_vals, 1):
-            data_cell(ws2.cell(i,col), val, bg=best_fills[i-8],
+            data_cell(ws2.cell(i,col), val, bg=best_fills[i-cat_row],
                       align="center" if col in (1,2,3) else "left")
 
     for col, w in zip("ABCD",[16,24,16,60]):
