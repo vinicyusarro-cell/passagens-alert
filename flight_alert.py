@@ -22,7 +22,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GMAIL_USER     = os.environ["GMAIL_USER"]       # vinicyusarro@gmail.com
 GMAIL_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]  # App Password do Gmail
 TO_EMAILS      = ["vinicyusarro@gmail.com", "lais_domitilo@hotmail.com"]
-MODEL          = "gemini-1.5-flash"
+MODEL          = "gemini-2.5-flash"
 
 # ── PROMPT ────────────────────────────────────────────────────────────────────
 def build_prompt():
