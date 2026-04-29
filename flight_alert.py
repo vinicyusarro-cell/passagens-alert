@@ -7,10 +7,12 @@ import os
 import json
 import smtplib
 import datetime
+import tempfile
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
+from urllib.parse import quote_plus, urlparse
 
 import requests
 from openpyxl import Workbook
@@ -23,6 +25,7 @@ GMAIL_USER     = os.environ["GMAIL_USER"]       # vinicyusarro@gmail.com
 GMAIL_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]  # App Password do Gmail
 TO_EMAILS      = ["vinicyusarro@gmail.com", "lais_domitilo@hotmail.com"]
 MODEL          = "gemini-2.5-flash"
+PI_BASE_URL    = "https://passagensimperdiveis.com.br"
 
 # ── PROMPT ────────────────────────────────────────────────────────────────────
 def build_prompt():
@@ -45,6 +48,8 @@ Critérios:
 - Priorize voos mais baratos em reais, mas evite conexões inviáveis (acima de 4h de escala)
 - Considere flexibilidade de ±2 dias nas datas
 - Compare múltiplos destinos e companhias aéreas
+- Analise também o site https://passagensimperdiveis.com.br e encontre ofertas publicadas saindo de Salvador (SSA) para qualquer destino do mundo
+- Na análise do Passagens Imperdíveis, inclua apenas ofertas em que SSA/Salvador seja a origem; se houver poucas ofertas ativas, traga todas as encontradas e explique a limitação nas observações
 
 Responda APENAS com JSON válido, sem texto fora do JSON, sem markdown, sem blocos de código. Estrutura exata:
 
@@ -67,6 +72,19 @@ Responda APENAS com JSON válido, sem texto fora do JSON, sem markdown, sem bloc
   "ranking_top3_baratos": [
     {{"posicao": 1, "destino": "string", "preco": "string", "motivo": "string"}}
   ],
+  "ofertas_passagens_imperdiveis": [
+    {{
+      "titulo_oferta": "string",
+      "destino": "string",
+      "periodo_viagem": "string",
+      "preco_a_partir_reais": "string",
+      "companhia": "string",
+      "tipo_oferta": "string",
+      "link_oferta": "string",
+      "data_publicacao": "string",
+      "observacoes": "string"
+    }}
+  ],
   "melhor_opcao_geral": {{
     "brasil": {{"destino": "string", "preco": "string", "motivo": "string", "link": "string"}},
     "europa": {{"destino": "string", "preco": "string", "motivo": "string", "link": "string"}},
@@ -79,7 +97,9 @@ Responda APENAS com JSON válido, sem texto fora do JSON, sem markdown, sem bloc
   }}
 }}
 
-Inclua pelo menos 12 destinos variados (Brasil, Europa, EUA). Use preços reais e atuais baseados no mercado de hoje."""
+Inclua pelo menos 12 destinos variados (Brasil, Europa, EUA) no comparativo geral.
+Inclua até 15 ofertas do Passagens Imperdíveis saindo de SSA para qualquer lugar do mundo, priorizando as mais recentes e baratas.
+Use preços reais e atuais baseados no mercado de hoje."""
 
 # ── GEMINI API ────────────────────────────────────────────────────────────────
 def call_gemini(prompt: str) -> dict:
@@ -127,7 +147,58 @@ def data_cell(c, text, bg=WHITE, bold=False, align="left", color=DARK_GRAY, size
     thin = Side(style="thin", color="CCCCCC")
     c.border    = Border(left=thin, right=thin, top=thin, bottom=thin)
 
+def set_hyperlink_cell(c, url: str):
+    if url and isinstance(url, str) and url.startswith(("http://", "https://")):
+        c.hyperlink = url
+        c.font = Font(size=c.font.sz or 8, name="Arial", color="0563C1", underline="single")
+
+def pi_search_url(offer: dict) -> str:
+    query_parts = [
+        "SSA Salvador",
+        offer.get("destino", ""),
+        offer.get("titulo_oferta", ""),
+        offer.get("preco_a_partir_reais", ""),
+    ]
+    query = " ".join(part for part in query_parts if part).strip()
+    return f"{PI_BASE_URL}/?s={quote_plus(query or 'SSA Salvador')}"
+
+def is_valid_pi_url(url: str) -> bool:
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return False
+
+    parsed = urlparse(url)
+    if parsed.netloc not in {"passagensimperdiveis.com.br", "www.passagensimperdiveis.com.br"}:
+        return False
+    if parsed.path.rstrip("/") == "/oferta":
+        return False
+
+    try:
+        r = requests.get(
+            url,
+            timeout=12,
+            allow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+    except requests.RequestException:
+        return False
+
+    page_start = r.text[:1500].lower()
+    return r.status_code < 400 and "__next_error__" not in page_start
+
+def normalize_pi_offer_links(data: dict) -> None:
+    for offer in data.get("ofertas_passagens_imperdiveis", []):
+        original_url = offer.get("link_oferta", "")
+        if is_valid_pi_url(original_url):
+            continue
+
+        offer["link_oferta"] = pi_search_url(offer)
+        obs = offer.get("observacoes", "").strip()
+        note = "Link original nao validado; abrindo busca no Passagens Imperdiveis para evitar pagina desconhecida."
+        offer["observacoes"] = f"{obs} {note}".strip()
+
 def build_excel(data: dict, filepath: str):
+    normalize_pi_offer_links(data)
+
     wb   = Workbook()
     today_str = data.get("data_geracao", datetime.date.today().strftime("%d/%m/%Y"))
 
@@ -175,7 +246,7 @@ def build_excel(data: dict, filepath: str):
                 data_cell(cc, val, bg=bg, bold=True, align="center", color=GREEN_DARK)
             elif col == 9:
                 data_cell(cc, val, bg=bg, size=8, color="0563C1")
-                cc.font = Font(size=8, name="Arial", color="0563C1", underline="single")
+                set_hyperlink_cell(cc, val)
             elif col in (1,2,6,7,8):
                 data_cell(cc, val, bg=bg, align="center")
             else:
@@ -240,7 +311,66 @@ def build_excel(data: dict, filepath: str):
     for col, w in zip("ABCD",[16,24,16,60]):
         ws2.column_dimensions[col].width = w
 
-    # ── Aba 3: Insights ──────────────────────────────────────────────────────
+    # Aba 3: Passagens Imperdiveis
+    ws_pi = wb.create_sheet("PI SSA")
+    ws_pi.freeze_panes = "A4"
+
+    ws_pi.merge_cells("A1:I1")
+    c = ws_pi["A1"]
+    c.value     = f"PASSAGENS IMPERDIVEIS - OFERTAS SAINDO DE SSA - Gerado em {today_str}"
+    c.font      = Font(bold=True, size=13, color=WHITE, name="Arial")
+    c.fill      = PatternFill("solid", fgColor=DARK_BROWN)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws_pi.row_dimensions[1].height = 32
+
+    ws_pi.merge_cells("A2:I2")
+    c = ws_pi["A2"]
+    c.value     = "Fonte: https://passagensimperdiveis.com.br | Origem obrigatoria: Salvador (SSA) | Destinos: qualquer lugar do mundo"
+    c.font      = Font(italic=True, size=10, color=DARK_BROWN, name="Arial")
+    c.fill      = PatternFill("solid", fgColor=LIGHT_GOLD)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws_pi.row_dimensions[2].height = 18
+
+    pi_headers = ["Titulo da Oferta", "Destino", "Periodo", "Preco a partir\n(R$)",
+                  "Cia. Aerea", "Tipo", "Link da Oferta", "Publicacao", "Observacoes"]
+    ws_pi.row_dimensions[3].height = 38
+    for col, h in enumerate(pi_headers, 1):
+        hdr_cell(ws_pi.cell(3, col), h)
+
+    pi_offers = data.get("ofertas_passagens_imperdiveis", [])
+    if not pi_offers:
+        ws_pi.merge_cells("A4:I4")
+        c = ws_pi["A4"]
+        data_cell(c, "Nenhuma oferta saindo de SSA foi encontrada no Passagens Imperdiveis para este relatorio.", bg=PALE_GOLD)
+        ws_pi.row_dimensions[4].height = 36
+    else:
+        for i, offer in enumerate(pi_offers, 4):
+            bg = row_fills[i % 2]
+            ws_pi.row_dimensions[i].height = 52
+            vals = [
+                offer.get("titulo_oferta",""), offer.get("destino",""),
+                offer.get("periodo_viagem",""), offer.get("preco_a_partir_reais",""),
+                offer.get("companhia",""), offer.get("tipo_oferta",""),
+                offer.get("link_oferta",""), offer.get("data_publicacao",""),
+                offer.get("observacoes","")
+            ]
+            for col, val in enumerate(vals, 1):
+                cc = ws_pi.cell(i, col, val)
+                if col == 4:
+                    data_cell(cc, val, bg=bg, bold=True, align="center", color=GREEN_DARK)
+                elif col == 7:
+                    data_cell(cc, val, bg=bg, size=8, color="0563C1")
+                    set_hyperlink_cell(cc, val)
+                elif col in (2, 4, 5, 6, 8):
+                    data_cell(cc, val, bg=bg, align="center")
+                else:
+                    data_cell(cc, val, bg=bg)
+
+    pi_col_widths = [38,24,24,16,18,18,46,16,52]
+    for i, w in enumerate(pi_col_widths, 1):
+        ws_pi.column_dimensions[get_column_letter(i)].width = w
+
+    # ── Aba 4: Insights ──────────────────────────────────────────────────────
     ws3 = wb.create_sheet("💡 Insights")
     ws3.merge_cells("A1:B1")
     c = ws3["A1"]
@@ -288,7 +418,7 @@ Olá! 👋
 Segue em anexo o relatório diário de passagens saindo de Salvador (SSA) para Brasil, Europa e EUA.
 
 📅 Data: {today_str}
-📊 Conteúdo: Comparativo completo · Ranking Top 3 · Insights estratégicos
+📊 Conteúdo: Comparativo completo · Ranking Top 3 · Ofertas Passagens Imperdíveis SSA · Insights estratégicos
 🗓 Janelas analisadas: 30, 60 e 90 dias
 
 Abra a planilha Excel para ver todos os detalhes, links de compra e recomendações do dia.
@@ -321,7 +451,10 @@ def main():
     data   = call_gemini(prompt)
     print(f"✅ Recebidos {len(data.get('voos',[]))} voos do Gemini")
 
-    filepath = f"/tmp/passagens_ssa_{datetime.date.today().strftime('%Y%m%d')}.xlsx"
+    filepath = os.path.join(
+        tempfile.gettempdir(),
+        f"passagens_ssa_{datetime.date.today().strftime('%Y%m%d')}.xlsx"
+    )
     print("📊 Gerando planilha Excel...")
     build_excel(data, filepath)
     print(f"✅ Planilha salva: {filepath}")
